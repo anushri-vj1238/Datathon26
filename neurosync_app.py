@@ -142,3 +142,4 @@ if st.button("Predict Productivity"):
         st.success("🔥 Optimal BPM range detected!")
     else:
         st.info("🔄 Slight adjustments may improve focus.")
+        
