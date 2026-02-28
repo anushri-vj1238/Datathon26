@@ -67,19 +67,31 @@ def preprocess_emotion(data_dir: Path) -> pd.DataFrame:
             break
 
     if label_col is None:
-        object_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
+        object_cols = df.select_dtypes(include=["object", "string", "category"]).columns.tolist()
         if not object_cols:
             raise ValueError("emotion.csv has no categorical emotion label column")
         label_col = object_cols[0]
 
-    mapped = (
-        df[label_col]
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        .map(EMOTION_MAP)
-        .astype(float)
-    )
+    labels = df[label_col].astype(str).str.strip().str.lower()
+
+    # Map common label variants onto happy/neutral/sad buckets first.
+    aliases = {
+        "happy": "happy",
+        "joy": "happy",
+        "positive": "happy",
+        "neutral": "neutral",
+        "sad": "sad",
+        "anger": "sad",
+        "angry": "sad",
+        "fear": "sad",
+        "negative": "sad",
+    }
+    canonical = labels.map(aliases)
+    mapped = canonical.map(EMOTION_MAP).astype(float)
+
+    # Fallback: if mapping yields no usable values, encode categories ordinally.
+    if mapped.notna().sum() == 0:
+        mapped = pd.factorize(labels)[0].astype(float)
 
     out = pd.DataFrame({"emotion_score": scale_1_to_10(mapped)})
     out = out.dropna().reset_index(drop=True)
@@ -91,7 +103,7 @@ def preprocess_stress(data_dir: Path) -> pd.DataFrame:
     working = df.copy()
 
     for col in working.columns:
-        working[col] = pd.to_numeric(working[col], errors="ignore")
+        working[col] = pd.to_numeric(working[col], errors="coerce")
 
     numeric_cols = working.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
@@ -132,8 +144,19 @@ def preprocess_mental_health(data_dir: Path) -> pd.DataFrame:
     df = pd.read_csv(data_dir / "mental_health.csv")
     working = df.copy()
 
+    yes_no_cols = []
+    yes_no_map = {"yes": 1.0, "no": 0.0}
     for col in working.columns:
-        working[col] = pd.to_numeric(working[col], errors="ignore")
+        if working[col].dtype in ("object", "string"):
+            lowered = working[col].astype(str).str.strip().str.lower()
+            non_null = lowered[lowered != "nan"]
+            unique = set(non_null.unique())
+            if unique and unique.issubset({"yes", "no"}):
+                working[col] = lowered.map(yes_no_map)
+                yes_no_cols.append(col)
+
+    for col in working.columns:
+        working[col] = pd.to_numeric(working[col], errors="coerce")
 
     numeric_cols = working.select_dtypes(include=[np.number]).columns.tolist()
     if not numeric_cols:
@@ -152,7 +175,10 @@ def preprocess_mental_health(data_dir: Path) -> pd.DataFrame:
     )
     trait_cols = [c for c in numeric_cols if any(k in c.lower() for k in trait_keywords)]
     if not trait_cols:
-        trait_cols = numeric_cols
+        if yes_no_cols:
+            trait_cols = [c for c in yes_no_cols if c in numeric_cols]
+        else:
+            trait_cols = numeric_cols
 
     normalized = normalize_columns(working, trait_cols)
     out = normalized[trait_cols].copy()
